@@ -1,9 +1,10 @@
 import tensorflow as tf
 from tensorflow.python.keras.engine import compile_utils, data_adapter
+import itertools
 from losses import MeanSquaredError
 
 
-class LevenbergMarquardt:
+class LevenbergMarquardtLayer:
     def __init__(self, model, optimizer=tf.keras.optimizers.SGD(learning_rate=1.0), loss=MeanSquaredError(),
                  attempts_per_step=10, experimental_use_pfor=True, starting_value=0.5, dec_factor=0.2,
                  inc_factor=5., min_value=1e-10, max_value=1e+10, patience=100):
@@ -80,6 +81,10 @@ class LevenbergMarquardt:
             self._splits.append(variable_size)
             self._shapes.append(variable_shape)
 
+        # print("SPLITS")
+        # print(self._splits)
+        # print("\n")
+
         self._num_variables = tf.reduce_sum(self._splits).numpy().item()
         self._num_outputs = None
 
@@ -125,9 +130,43 @@ class LevenbergMarquardt:
         # Calculate Jacobians for each layer and Quasi-Hessian matrices
         Js, residuals, outputs = self._compute_jacobians(inputs, targets)
 
-        JJs = [tf.linalg.matmul(J, J, transpose_a=True) for J in Js]
-        rhs = [tf.linalg.matmul(J, residuals, transpose_a=True) for J in Js]
-        return Js, JJs, rhs, outputs
+        # Group Jacobians
+        Js_grouped = [tf.concat(Js[i:i + 2], 1) for i in range(0, len(Js), 2)]
+
+        # print("Residuals")
+        # print(residuals.shape)
+        # print("\n")
+        #
+        # print("Jacobians Shape")
+        # print([j.shape for j in Js])
+        # print("\n")
+        #
+        # print("Grouped Jacobians")
+        # print([j.shape for j in Js_grouped])
+        # print("\n")
+
+        # JJs = [tf.linalg.matmul(J, J, transpose_a=True) for J in Js]
+        JJs_grouped = [tf.linalg.matmul(J, J, transpose_a=True) for J in Js_grouped]
+        # rhs = [tf.linalg.matmul(J, residuals, transpose_a=True) for J in Js]
+        rhs_grouped = [tf.linalg.matmul(J, residuals, transpose_a=True) for J in Js_grouped]
+
+        # print("Hessians Shape")
+        # print([h.shape for h in JJs])
+        # print("\n")
+
+        # print("Grouped Hessians Shape")
+        # print([h.shape for h in JJs_grouped])
+        # print("\n")
+
+        # print("RHS Shape")
+        # print([r.shape for r in rhs])
+        # print("\n")
+
+        # print("Grouped RHS Shape")
+        # print([r.shape for r in rhs_grouped])
+        # print("\n")
+
+        return Js_grouped, JJs_grouped, rhs_grouped, outputs
 
     # def _compute_gauss_newton_overdetermined(self, Js, JJs, rhs):
     # Calculate delta W for each layer of the network
@@ -168,8 +207,15 @@ class LevenbergMarquardt:
                 finite = [tf.reduce_all(tf.math.is_finite(update)) for update in updates]
                 if tf.reduce_all(finite):
                     update_computed = True
+                    # Split grouped updates
+                    updates = [tf.split(tf.squeeze(updates[i], axis=-1), self._splits[i * 2:(i + 1) * 2])
+                               for i in range(len(updates))]
+                    updates = list(itertools.chain(*updates))
+
                     # Split and Reshape the updates
-                    updates = [tf.reshape(update, shape) for update, shape in zip(updates, self._shapes)]
+                    # updates = [tf.reshape(update, shape) for update, shape in zip(updates, self._shapes)]
+                    updates = [tf.reshape(update, shape) for update, shape in
+                               zip(updates, self._shapes)]
 
                     # Apply the updates to the model trainable_variables.
                     self.optimizer.apply_gradients(zip(updates, self.model.trainable_variables))
@@ -313,9 +359,9 @@ class LevenbergMarquardt:
         pl.on_train_end()
 
 
-class LMWrapper(tf.keras.Model):
+class LMWrapperLayer(tf.keras.Model):
     def __init__(self, model):
-        super(LMWrapper, self).__init__()
+        super(LMWrapperLayer, self).__init__()
         self.model = model
         self.trainer = None
 
@@ -325,16 +371,16 @@ class LMWrapper(tf.keras.Model):
     def compile(self, optimizer=tf.keras.optimizers.SGD(learning_rate=1.0), loss=MeanSquaredError(),
                 attempts_per_step=10, experimental_use_pfor=True, metrics=None, loss_weights=None,
                 weighted_metrics=None, **kwargs):
-        super(LMWrapper, self).compile(optimizer=optimizer, loss=loss, metrics=metrics, loss_weights=loss_weights,
-                                       weighted_metrics=weighted_metrics, run_eagerly=True)
+        super(LMWrapperLayer, self).compile(optimizer=optimizer, loss=loss, metrics=metrics, loss_weights=loss_weights,
+                                            weighted_metrics=weighted_metrics, run_eagerly=True)
 
         self.built = self.model.built
 
-        self.trainer = LevenbergMarquardt(model=self,
-                                          optimizer=optimizer,
-                                          loss=loss,
-                                          attempts_per_step=attempts_per_step,
-                                          experimental_use_pfor=experimental_use_pfor)
+        self.trainer = LevenbergMarquardtLayer(model=self,
+                                               optimizer=optimizer,
+                                               loss=loss,
+                                               attempts_per_step=attempts_per_step,
+                                               experimental_use_pfor=experimental_use_pfor)
 
     def train_step(self, data):
         x, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
@@ -368,5 +414,5 @@ class LMWrapper(tf.keras.Model):
                                                       stateful_metrics=["damping_factor", "attempts"])
             callbacks.append(logger)
 
-        return super(LMWrapper, self).fit(x=x, y=y, batch_size=batch_size, epochs=epochs,
-                                          verbose=verbose, callbacks=callbacks, **kwargs)
+        return super(LMWrapperLayer, self).fit(x=x, y=y, batch_size=batch_size, epochs=epochs,
+                                               verbose=verbose, callbacks=callbacks, **kwargs)

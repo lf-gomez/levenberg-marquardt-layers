@@ -8,6 +8,7 @@ import pandas as pd
 
 from losses import MeanSquaredError
 from lm import LMWrapper
+from lm_layer import LMWrapperLayer
 from random import shuffle
 
 
@@ -20,6 +21,7 @@ def main():
     num_experiments = 1
     n = 1000
     X = np.linspace(-5, 5, n).reshape(-1, 1)
+    # X = np.linspace(0, 1, n).reshape(-1, 1)
     # Y = 4 * X * np.sin(10 * X) + X * np.exp(X) * np.cos(20 * X)
     Y = 0.05 + (0.05 * X ** 2 - 0.05 * np.cos(2 * np.pi * X))
 
@@ -42,8 +44,11 @@ def main():
         model.summary()
 
         # model_lm = LMWrapper(tf.keras.models.clone_model(model))
-        model_lm = LMWrapper(model)
+        model_lm = LMWrapper(tf.keras.models.clone_model(model))
         model_lm.set_weights(model.get_weights())
+
+        model_lm_layer = LMWrapperLayer(tf.keras.models.clone_model(model))
+        model_lm_layer.set_weights(model.get_weights())
 
         # Training Adam network
         # model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.01),
@@ -65,10 +70,22 @@ def main():
             metrics=[tf.keras.metrics.RootMeanSquaredError()])
 
         t2_start = time.perf_counter()
-        lm_hist = train_and_evaluate(model_lm, x, y, num_epochs=2000, batch_size=n)
+        lm_hist = train_and_evaluate(model_lm, x, y, num_epochs=1000, batch_size=n)
         t2_stop = time.perf_counter()
 
-        print(f"Levenberg-Marquardt per layer: {(t2_stop - t2_start)}")
+        model_lm_layer.compile(
+            optimizer=tf.keras.optimizers.SGD(learning_rate=1.),
+            loss=MeanSquaredError(),
+            experimental_use_pfor=False,
+            metrics=[tf.keras.metrics.RootMeanSquaredError()])
+
+        t3_start = time.perf_counter()
+        lm_hist_layer = train_and_evaluate(model_lm_layer, x, y, num_epochs=1000, batch_size=n)
+        t3_stop = time.perf_counter()
+
+        print(f"Levenberg-Marquardt: {(t2_stop - t2_start)}")
+
+        print(f"Levenberg-Marquardt Per Layer: {(t3_stop - t3_start)}")
 
         # adam_hist["time"] = t1_stop - t1_start
         # lm_hist["time"] = t2_stop - t2_start
@@ -94,10 +111,11 @@ def main():
 
         # print(tracemalloc.get_traced_memory())
         # tracemalloc.stop()
-        y_hat = model_lm.predict(x)
-
-        plt.scatter(x, y_hat, label="prediction", s=0.3)
-        plt.plot(X, Y, label="true")
+        y_hat = model_lm.predict(X)
+        y_hat_layer = model_lm_layer.predict(X)
+        plt.plot(X, Y, label="true", c="C0")
+        plt.plot(X, y_hat, "r--", label="prediction")
+        plt.plot(X, y_hat_layer, "g--", label="prediction layer")
         plt.legend()
         plt.show()
 
